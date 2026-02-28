@@ -31,14 +31,19 @@ class OrderBook {
     public:
     void addOrder(Order newOrder) {
         if (newOrder.isBuy) {
-            bids[newOrder.Price].push_back(newOrder);
-            idToOrder[newOrder.OrderId]=&asks[newOrder.Price].back();
+            //bids[newOrder.Price].push_back(newOrder);
+            auto& lista = bids[newOrder.Price];
+            lista.push_back(newOrder);
+            idToOrder[newOrder.OrderId] = { newOrder.Price, newOrder.isBuy, std::prev(lista.end()) };
             std::cout<<"Dodano zlecenie Kupna:"<<newOrder.OrderId<<std::endl;
             std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
             std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
         }
         else {
-            asks[newOrder.Price].push_back(newOrder);
+            //asks[newOrder.Price].push_back(newOrder);
+            auto& lista = asks[newOrder.Price];
+            lista.push_back(newOrder);
+            idToOrder[newOrder.OrderId] = { newOrder.Price, newOrder.isBuy, std::prev(lista.end()) };
             std::cout<<"Dodano zlecenie Sprzedaży:"<<newOrder.OrderId<<std::endl;
             std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
             std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
@@ -62,6 +67,7 @@ class OrderBook {
             buyOrder.Quantity -= quantityToTrade;
 
             if (sellOrder.Quantity == 0) {
+                idToOrder.erase(sellOrder.OrderId);
                 itAsk->second.pop_front();
                 if (itAsk->second.empty()) {
                     asks.erase(itAsk);
@@ -69,6 +75,7 @@ class OrderBook {
             }
 
             if (buyOrder.Quantity == 0) {
+                idToOrder.erase(buyOrder.OrderId);
                 itBid->second.pop_front();
                 if (itBid->second.empty()) {
                     bids.erase(itBid);
@@ -98,18 +105,36 @@ class OrderBook {
     }
 
 
-    void IDLookup(){
-        unsigned long long int IdLookup;
-        std::cin>>IdLookup;
+    void cancelOrder(unsigned long long int id){
+        unsigned long long int IdLookup=id;
         auto findId=idToOrder.find(IdLookup);
-        if (findId != idToOrder.end()){
-            findId->second->
+        if (findId == idToOrder.end()){
+            std::cout<<"Zlecenie o id "<<id<<" nie istnieje"<<std::endl;
+            return;
         }
+        OrderLocation loc = findId->second;
+        if (loc.isBuy) {
+            bids[loc.price].erase(loc.it);
+
+            if (bids[loc.price].empty()) {
+                bids.erase(loc.price);
+            }
+            std::cout<<"Usunieto zlecenie kupna nr. "<<IdLookup<<std::endl;
+        } else {
+            asks[loc.price].erase(loc.it);
+            if (asks[loc.price].empty()) {
+                asks.erase(loc.price);
+            }
+            std::cout<<"Usunieto zlecenie sprzedaży nr. "<<IdLookup<<std::endl;
+        }
+
+        idToOrder.erase(IdLookup);
+
     }
     private:
-        std::map<unsigned long long int, std::deque<Order>> asks; //from smallest to biggest
-        std::map<unsigned long long int, std::deque<Order>, std::greater<unsigned long long int>> bids; //from biggest to smallest
-        std::unordered_map<unsigned long long int, Order*> idToOrder;
+        std::map<unsigned long long int, std::list<Order>> asks; //from smallest to biggest
+        std::map<unsigned long long int, std::list<Order>, std::greater<unsigned long long int>> bids; //from biggest to smallest
+        std::unordered_map<unsigned long long int, OrderLocation> idToOrder;
 };
 
 int main() {
@@ -129,5 +154,6 @@ int main() {
     orderBook.addOrder(asks[1]);
     orderBook.matchOrders();
     orderBook.printBook();
+    orderBook.cancelOrder(1);
     return 0;
 }
