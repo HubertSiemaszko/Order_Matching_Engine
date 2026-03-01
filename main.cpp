@@ -5,7 +5,13 @@
 #include <map>
 #include <list>
 #include <functional>
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 struct Order {
+    std::string symbol;
     unsigned long long int OrderId;
     unsigned long long int Price;
     unsigned long int Quantity;
@@ -135,6 +141,62 @@ class OrderBook {
         std::map<unsigned long long int, std::list<Order>> asks; //from smallest to biggest
         std::map<unsigned long long int, std::list<Order>, std::greater<unsigned long long int>> bids; //from biggest to smallest
         std::unordered_map<unsigned long long int, OrderLocation> idToOrder;
+};
+
+class OrderBookThread {
+private:
+    OrderBook book;
+    std::queue<Order> incomingOrders;
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::atomic<bool> running{true};
+    std::thread workerThread;
+
+    void processLoop() {
+        while (running) {
+            std::unique_lock<std::mutex> lock(mtx);
+            cv.wait(lock, [this] { return !incomingOrders.empty()||!running; });
+            if (!running&&incomingOrders.empty()) break;
+
+            Order order=incomingOrders.front();
+            incomingOrders.pop();
+            lock.unlock();
+            book.addOrder(order);
+        }
+    }
+public:
+    OrderBookThread() {
+        workerThread = std::thread(&OrderBookThread::processLoop, this);
+    }
+
+    ~OrderBookThread() {
+        running = false;
+        cv.notify_one();
+        if (workerThread.joinable()) workerThread.join();
+    }
+
+    void submitOrder(Order ord) {
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            incomingOrders.push(ord);
+        }
+        cv.notify_one();
+    }
+};
+
+class ExchangeDispatcher {
+private:
+    std::unordered_map<std::string, std::unique_ptr<OrderBookThread>> shards;
+
+public:
+    void addOrder(Order ord) {
+        if (shards.find(ord.symbol) == shards.end()) {
+            shards[ord.symbol] = std::make_unique<OrderBookThread>();
+            std::cout << "[Dispatcher] Tworzę nowy wątek dla symbolu: " << ord.symbol << std::endl;
+        }
+
+        shards[ord.symbol]->submitOrder(ord);
+    }
 };
 
 int main() {
