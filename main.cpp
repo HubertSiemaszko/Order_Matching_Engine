@@ -50,9 +50,9 @@ class OrderBook {
             auto& lista = asks[newOrder.Price];
             lista.push_back(newOrder);
             idToOrder[newOrder.OrderId] = { newOrder.Price, newOrder.isBuy, std::prev(lista.end()) };
-            std::cout<<"Dodano zlecenie Sprzedaży:"<<newOrder.OrderId<<std::endl;
-            std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
-            std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
+            //std::cout<<"Dodano zlecenie Sprzedaży:"<<newOrder.OrderId<<std::endl;
+            //std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
+            //std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
         }
         matchOrders();
     }
@@ -67,7 +67,7 @@ class OrderBook {
 
             unsigned long quantityToTrade = std::min(sellOrder.Quantity, buyOrder.Quantity);
 
-            std::cout << "TRANSAKCJA: " << quantityToTrade << " sztuk po cenie " << itAsk->first << std::endl;
+            //std::cout << "TRANSAKCJA: " << quantityToTrade << " sztuk po cenie " << itAsk->first << std::endl;
 
             sellOrder.Quantity -= quantityToTrade;
             buyOrder.Quantity -= quantityToTrade;
@@ -115,7 +115,7 @@ class OrderBook {
         unsigned long long int IdLookup=id;
         auto findId=idToOrder.find(IdLookup);
         if (findId == idToOrder.end()){
-            std::cout<<"Zlecenie o id "<<id<<" nie istnieje"<<std::endl;
+            //std::cout<<"Zlecenie o id "<<id<<" nie istnieje"<<std::endl;
             return;
         }
         OrderLocation loc = findId->second;
@@ -125,13 +125,13 @@ class OrderBook {
             if (bids[loc.price].empty()) {
                 bids.erase(loc.price);
             }
-            std::cout<<"Usunieto zlecenie kupna nr. "<<IdLookup<<std::endl;
+            //std::cout<<"Usunieto zlecenie kupna nr. "<<IdLookup<<std::endl;
         } else {
             asks[loc.price].erase(loc.it);
             if (asks[loc.price].empty()) {
                 asks.erase(loc.price);
             }
-            std::cout<<"Usunieto zlecenie sprzedaży nr. "<<IdLookup<<std::endl;
+            //std::cout<<"Usunieto zlecenie sprzedaży nr. "<<IdLookup<<std::endl;
         }
 
         idToOrder.erase(IdLookup);
@@ -192,7 +192,7 @@ public:
     void addOrder(Order ord) {
         if (shards.find(ord.symbol) == shards.end()) {
             shards[ord.symbol] = std::make_unique<OrderBookThread>();
-            std::cout << "[Dispatcher] Tworzę nowy wątek dla symbolu: " << ord.symbol << std::endl;
+            //std::cout << "[Dispatcher] Tworzę nowy wątek dla symbolu: " << ord.symbol << std::endl;
         }
 
         shards[ord.symbol]->submitOrder(ord);
@@ -215,7 +215,7 @@ int main() {
     orderBook.addOrder(asks[0]);
     orderBook.addOrder(asks[1]);
     orderBook.matchOrders();
-    orderBook.printBook();
+    //orderBook.printBook();
     orderBook.cancelOrder(1);
     return 0;
 }
