@@ -11,12 +11,12 @@
 #include <condition_variable>
 #include <atomic>
 struct Order {
-    std::string symbol;
     unsigned long long int symbolId;
     unsigned long long int OrderId;
     unsigned long long int Price;
     unsigned long int Quantity;
     bool isBuy;
+    bool isActive;
     Order() : OrderId(0), Price(0), Quantity(0), isBuy(false) {}
     Order(unsigned long long int id, unsigned long long int p, unsigned long int q, bool buy)
         : OrderId(id), Price(p), Quantity(q), isBuy(buy) {}
@@ -31,7 +31,7 @@ struct Level {
 struct OrderLocation {
     unsigned long long int price;
     bool isBuy;
-    std::list<Order>::iterator it;
+    size_t index;
 };
 
 class OrderBook {
@@ -39,18 +39,18 @@ class OrderBook {
     void addOrder(Order newOrder) {
         if (newOrder.isBuy) {
             //bids[newOrder.Price].push_back(newOrder);
-            auto& lista = bids[newOrder.Price];
-            lista.push_back(newOrder);
-            idToOrder[newOrder.OrderId] = { newOrder.Price, newOrder.isBuy, std::prev(lista.end()) };
-            std::cout<<"Dodano zlecenie Kupna:"<<newOrder.OrderId<<std::endl;
-            std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
-            std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
+            auto& vec = bids[newOrder.Price];
+            vec.push_back(newOrder);
+            idToOrder[newOrder.OrderId] = { newOrder.Price, true, vec.size() - 1 };
+            //std::cout<<"Dodano zlecenie Kupna:"<<newOrder.OrderId<<std::endl;
+            //std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
+            //std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
         }
         else {
             //asks[newOrder.Price].push_back(newOrder);
-            auto& lista = asks[newOrder.Price];
-            lista.push_back(newOrder);
-            idToOrder[newOrder.OrderId] = { newOrder.Price, newOrder.isBuy, std::prev(lista.end()) };
+            auto& vec = asks[newOrder.Price];
+            vec.push_back(newOrder);
+            idToOrder[newOrder.OrderId] = { newOrder.Price, false, vec.size() - 1 };
             //std::cout<<"Dodano zlecenie Sprzedaży:"<<newOrder.OrderId<<std::endl;
             //std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
             //std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
@@ -58,37 +58,49 @@ class OrderBook {
         matchOrders();
     }
 
-    void matchOrders(){
-        if (asks.empty()||bids.empty()) {return;}
+    void matchOrders() {
+        if (asks.empty() || bids.empty()) return;
+
         while (!asks.empty() && !bids.empty() && bids.begin()->first >= asks.begin()->first) {
-            auto itAsk = asks.begin();
-            auto itBid = bids.begin();
-            Order& sellOrder = itAsk->second.front();
-            Order& buyOrder = itBid->second.front();
+            auto itAskLevel = asks.begin();
+            auto itBidLevel = bids.begin();
+
+            auto& askVec = itAskLevel->second;
+            auto& bidVec = itBidLevel->second;
+
+            // Znajdź pierwsze aktywne zlecenie po stronie ASK
+            size_t askIdx = 0;
+            while (askIdx < askVec.size() && (!askVec[askIdx].isActive || askVec[askIdx].Quantity == 0)) {
+                askIdx++;
+            }
+
+            // Znajdź pierwsze aktywne zlecenie po stronie BID
+            size_t bidIdx = 0;
+            while (bidIdx < bidVec.size() && (!bidVec[bidIdx].isActive || bidVec[bidIdx].Quantity == 0)) {
+                bidIdx++;
+            }
+
+            // Jeśli wektor jest pełen martwych zleceń, wyczyść go i usuń poziom z mapy
+            if (askIdx == askVec.size()) { asks.erase(itAskLevel); continue; }
+            if (bidIdx == bidVec.size()) { bids.erase(itBidLevel); continue; }
+
+            Order& sellOrder = askVec[askIdx];
+            Order& buyOrder = bidVec[bidIdx];
 
             unsigned long quantityToTrade = std::min(sellOrder.Quantity, buyOrder.Quantity);
-
-            //std::cout << "TRANSAKCJA: " << quantityToTrade << " sztuk po cenie " << itAsk->first << std::endl;
 
             sellOrder.Quantity -= quantityToTrade;
             buyOrder.Quantity -= quantityToTrade;
 
             if (sellOrder.Quantity == 0) {
+                sellOrder.isActive = false; // Oznaczamy jako zrealizowane/martwe
                 idToOrder.erase(sellOrder.OrderId);
-                itAsk->second.pop_front();
-                if (itAsk->second.empty()) {
-                    asks.erase(itAsk);
-                }
             }
 
             if (buyOrder.Quantity == 0) {
+                buyOrder.isActive = false;
                 idToOrder.erase(buyOrder.OrderId);
-                itBid->second.pop_front();
-                if (itBid->second.empty()) {
-                    bids.erase(itBid);
-                }
             }
-
         }
     }
 
@@ -113,34 +125,24 @@ class OrderBook {
 
 
     void cancelOrder(unsigned long long int id){
-        unsigned long long int IdLookup=id;
-        auto findId=idToOrder.find(IdLookup);
+        auto findId = idToOrder.find(id);
         if (findId == idToOrder.end()){
-            //std::cout<<"Zlecenie o id "<<id<<" nie istnieje"<<std::endl;
             return;
         }
-        OrderLocation loc = findId->second;
-        if (loc.isBuy) {
-            bids[loc.price].erase(loc.it);
 
-            if (bids[loc.price].empty()) {
-                bids.erase(loc.price);
-            }
-            //std::cout<<"Usunieto zlecenie kupna nr. "<<IdLookup<<std::endl;
+        OrderLocation loc = findId->second;
+
+        if (loc.isBuy) {
+            bids[loc.price][loc.index].isActive = false;
         } else {
-            asks[loc.price].erase(loc.it);
-            if (asks[loc.price].empty()) {
-                asks.erase(loc.price);
-            }
-            //std::cout<<"Usunieto zlecenie sprzedaży nr. "<<IdLookup<<std::endl;
+            asks[loc.price][loc.index].isActive = false;
         }
 
-        idToOrder.erase(IdLookup);
-
+        idToOrder.erase(id);
     }
     private:
-        std::map<unsigned long long int, std::list<Order>> asks; //from smallest to biggest
-        std::map<unsigned long long int, std::list<Order>, std::greater<unsigned long long int>> bids; //from biggest to smallest
+        std::map<unsigned long long int, std::vector<Order>> asks; //from smallest to biggest
+        std::map<unsigned long long int, std::vector<Order>, std::greater<unsigned long long int>> bids; //from biggest to smallest
         std::unordered_map<unsigned long long int, OrderLocation> idToOrder;
 };
 
@@ -196,9 +198,8 @@ public:
         auto it = shards.find(ord.symbolId);
 
         if (it == shards.end()) {
-
-            auto [newIt, inserted] = shards.try_emplace(ord.symbolId, std::make_unique<OrderBookThread>());
-            it = newIt;
+            shards[ord.symbolId] = std::make_unique<OrderBookThread>();
+            it = shards.find(ord.symbolId);
         }
 
         it->second->submitOrder(std::move(ord));
