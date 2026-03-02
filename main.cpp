@@ -12,6 +12,7 @@
 #include <atomic>
 struct Order {
     std::string symbol;
+    unsigned long long int symbolId;
     unsigned long long int OrderId;
     unsigned long long int Price;
     unsigned long int Quantity;
@@ -186,36 +187,70 @@ public:
 
 class ExchangeDispatcher {
 private:
-    std::unordered_map<std::string, std::unique_ptr<OrderBookThread>> shards;
+    std::unordered_map<unsigned long long int, std::unique_ptr<OrderBookThread>> shards;
 
 public:
     void addOrder(Order ord) {
-        if (shards.find(ord.symbol) == shards.end()) {
-            shards[ord.symbol] = std::make_unique<OrderBookThread>();
-            //std::cout << "[Dispatcher] Tworzę nowy wątek dla symbolu: " << ord.symbol << std::endl;
+        ord.symbolId = getInternalId(ord.symbol);
+
+        auto it = shards.find(ord.symbolId);
+
+        if (it == shards.end()) {
+
+            auto [newIt, inserted] = shards.try_emplace(ord.symbolId, std::make_unique<OrderBookThread>());
+            it = newIt;
         }
 
-        shards[ord.symbol]->submitOrder(ord);
+        it->second->submitOrder(std::move(ord));
+    }
+    unsigned int getInternalId(std::string_view symbol) {
+        static std::unordered_map<std::string, unsigned int> registry;
+        static unsigned int nextId = 0;
+
+        auto it = registry.find(std::string(symbol));
+        if (it == registry.end()) {
+            registry[std::string(symbol)] = ++nextId;
+            return nextId;
+        }
+        return it->second;
     }
 };
 
-int main() {
-    Order bids[2] = {
-        Order(1, 105, 10, true), //oferty kupna
-        Order(2, 110, 5, true)
-    };
-    Order asks[2]={
-        Order(1, 105, 10, false), //oferty sprzedazy
-        Order(2, 110, 5, false)
-    };
-    OrderBook orderBook;
+#include <chrono>
+#include <iomanip>
 
-    orderBook.addOrder(bids[0]);
-    orderBook.addOrder(bids[1]);
-    orderBook.addOrder(asks[0]);
-    orderBook.addOrder(asks[1]);
-    orderBook.matchOrders();
-    //orderBook.printBook();
-    orderBook.cancelOrder(1);
+int main() {
+    const int NUM_ORDERS = 1000000;
+    ExchangeDispatcher dispatcher;
+
+    // Przygotowanie danych testowych
+    std::vector<Order> testOrders;
+    for (int i = 0; i < NUM_ORDERS; ++i) {
+        Order o(i, 100 + (i % 10), 10, (i % 2 == 0));
+        o.symbol = (i % 2 == 0) ? "AAPL" : "TSLA";
+        testOrders.push_back(o);
+    }
+
+    std::cout << "Rozpoczynam benchmark dla " << NUM_ORDERS << " zlecen..." << std::endl;
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    for (int i = 0; i < NUM_ORDERS; ++i) {
+        dispatcher.addOrder(testOrders[i]);
+    }
+
+    // Uwaga: Dispatcher działa asynchronicznie (wątki).
+    // W profesjonalnym teście musielibyśmy poczekać, aż kolejki będą puste.
+    // Dla uproszczenia testujemy tutaj szybkość samego Dispatchera i wrzucania do kolejek.
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> diff = end - start;
+
+    double ops = NUM_ORDERS / diff.count();
+
+    std::cout << "--- WYNIKI BENCHMARKU ---" << std::endl;
+    std::cout << "Czas calkowity: " << std::fixed << std::setprecision(4) << diff.count() << " s" << std::endl;
+    std::cout << "Przepustowosc: " << std::fixed << std::setprecision(0) << ops << " zlecen/sekunda" << std::endl;
+
     return 0;
 }
