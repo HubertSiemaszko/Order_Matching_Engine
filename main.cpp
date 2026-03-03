@@ -10,6 +10,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+const size_t MAX_PRICE_LEVELS = 1000000;
 struct Order {
     unsigned long long int symbolId;
     unsigned long long int OrderId;
@@ -34,26 +35,41 @@ struct OrderLocation {
     size_t index;
 };
 
+struct PriceLevelInfo {
+    std::vector<Order> orders;
+    unsigned long long int Quantity;
+    Order* firstOrder;
+    Order* lastOrder;
+};
+
 class OrderBook {
     public:
     void addOrder(Order newOrder) {
+        if (newOrder.Price>=MAX_PRICE_LEVELS) {
+            return;
+        }
         if (newOrder.isBuy) {
-            //bids[newOrder.Price].push_back(newOrder);
             auto& vec = bids[newOrder.Price];
             vec.push_back(newOrder);
             idToOrder[newOrder.OrderId] = { newOrder.Price, true, vec.size() - 1 };
             //std::cout<<"Dodano zlecenie Kupna:"<<newOrder.OrderId<<std::endl;
             //std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
             //std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
+            if (newOrder.Price>=bestBid) {
+                bestBid = newOrder.Price;
+            }
         }
+
         else {
-            //asks[newOrder.Price].push_back(newOrder);
             auto& vec = asks[newOrder.Price];
             vec.push_back(newOrder);
             idToOrder[newOrder.OrderId] = { newOrder.Price, false, vec.size() - 1 };
             //std::cout<<"Dodano zlecenie Sprzedaży:"<<newOrder.OrderId<<std::endl;
             //std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
             //std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
+            if (newOrder.Price>=bestAsk) {
+                bestAsk = newOrder.Price;
+            }
         }
         matchOrders();
     }
@@ -61,12 +77,9 @@ class OrderBook {
     void matchOrders() {
         if (asks.empty() || bids.empty()) return;
 
-        while (!asks.empty() && !bids.empty() && bids.begin()->first >= asks.begin()->first) {
-            auto itAskLevel = asks.begin();
-            auto itBidLevel = bids.begin();
-
-            auto& askVec = itAskLevel->second;
-            auto& bidVec = itBidLevel->second;
+        while (bestBid>=bestAsk&&(!asks.empty()||!bids.empty())&& bestAsk < MAX_PRICE_LEVELS && bestBid > 0) {
+            auto askVec = asks[bestAsk];
+            auto bidVec = bids[bestBid];
 
             // Znajdź pierwsze aktywne zlecenie po stronie ASK
             size_t askIdx = 0;
@@ -80,9 +93,25 @@ class OrderBook {
                 bidIdx++;
             }
 
-            // Jeśli wektor jest pełen martwych zleceń, wyczyść go i usuń poziom z mapy
-            if (askIdx == askVec.size()) { asks.erase(itAskLevel); continue; }
-            if (bidIdx == bidVec.size()) { bids.erase(itBidLevel); continue; }
+            bool levelChanged = false;
+            if (askIdx==askVec.size()) {
+                if (bestAsk==MAX_PRICE_LEVELS) {
+                    break;
+                }
+                levelChanged = true;
+                askVec.clear();
+                bestAsk++;
+            }
+            if (bidIdx==bidVec.size()) {
+                if (bestBid==0) {
+                    break;
+                }
+                levelChanged = true;
+                askVec.clear();
+                bestAsk--;
+            }
+
+            if (levelChanged) continue;
 
             Order& sellOrder = askVec[askIdx];
             Order& buyOrder = bidVec[bidIdx];
@@ -93,7 +122,7 @@ class OrderBook {
             buyOrder.Quantity -= quantityToTrade;
 
             if (sellOrder.Quantity == 0) {
-                sellOrder.isActive = false; // Oznaczamy jako zrealizowane/martwe
+                sellOrder.isActive = false;
                 idToOrder.erase(sellOrder.OrderId);
             }
 
@@ -107,17 +136,23 @@ class OrderBook {
     void printBook() {
 
         std::cout<<"ASKS"<<std::endl;
-        for (auto const& [price, queue] : asks)
+        for (size_t i=bestAsk; i<MAX_PRICE_LEVELS; i++ )
         {
-            for (auto const& order: queue) {
-                std::cout<<order.OrderId<<" "<<order.Price<<" "<<order.Quantity<<std::endl;
+            if (!asks[i].empty()) {
+                for (auto const& order:asks[i]) {
+                    if (order.isActive) {
+                        std::cout<<order.OrderId<<" "<<order.Price<<" "<<order.Quantity<<std::endl;
+                    }
+                }
             }
         }
         std::cout<<"BIDS"<<std::endl;
-        for (auto const& [price, queue] : bids)
+        for (size_t i=bestBid; i>0; i--)
         {
-            for (auto const& order: queue) {
-                std::cout<<order.OrderId<<" "<<order.Price<<" "<<order.Quantity<<std::endl;
+            for (auto const& order:bids[i]) {
+                if (order.isActive) {
+                    std::cout<<order.OrderId<<" "<<order.Price<<" "<<order.Quantity<<std::endl;
+                };
             }
         }
 
@@ -141,9 +176,11 @@ class OrderBook {
         idToOrder.erase(id);
     }
     private:
-        std::map<unsigned long long int, std::vector<Order>> asks; //from smallest to biggest
-        std::map<unsigned long long int, std::vector<Order>, std::greater<unsigned long long int>> bids; //from biggest to smallest
+        std::vector<std::vector<Order>> asks; //from smallest to biggest
+        std::vector<std::vector<Order>, std::greater<unsigned long long int>> bids; //from biggest to smallest
         std::unordered_map<unsigned long long int, OrderLocation> idToOrder;
+        unsigned long long int bestBid = 0;
+        unsigned long long int bestAsk = MAX_PRICE_LEVELS;
 };
 
 class OrderBookThread {
