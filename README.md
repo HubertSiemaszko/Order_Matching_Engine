@@ -35,4 +35,4 @@ I built this ultra-low-latency order matching engine from scratch in C++ to deep
 mkdir build && cd build
 cmake ..
 make
-./matchingEngine
+./main
