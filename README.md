@@ -27,7 +27,7 @@ I built this ultra-low-latency order matching engine from scratch in C++ to deep
 
 * **Language:** C++
 * **Concurrency:** `<thread>`, `<mutex>`, `<condition_variable>`, `<atomic>`
-* **Data Structures:** `<vector>`, `<unordered_map>`
+* **Data Structures:** `<vector>`, `<unordered_map>`, `<deque>`, `<queue>`
 
 ## Build & Run
 
