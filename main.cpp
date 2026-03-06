@@ -184,6 +184,8 @@ class OrderBook {
         unsigned long long int bestAsk = MAX_PRICE_LEVELS;
 };
 
+
+
 class OrderBookThread {
 private:
     OrderBook book;
