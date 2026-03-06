@@ -81,6 +81,7 @@ class OrderBook {
                 }
             }
 
+
             if (buyOrder.Quantity == 0) {
                 idToOrder.erase(buyOrder.OrderId);
                 itBid->second.pop_front();
