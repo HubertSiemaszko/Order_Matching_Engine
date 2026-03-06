@@ -10,6 +10,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <chrono>
+#include <iomanip>
 const size_t MAX_PRICE_LEVELS = 1000000;
 struct Order {
     unsigned long long int symbolId;
@@ -258,14 +260,10 @@ public:
     }
 };
 
-#include <chrono>
-#include <iomanip>
-
 int main() {
     const int NUM_ORDERS = 1000000;
     ExchangeDispatcher dispatcher;
 
-    // Przygotowanie danych testowych
     std::vector<Order> testOrders;
     for (int i = 0; i < NUM_ORDERS; ++i) {
         Order o(i, 100 + (i % 10), 10, (i % 2 == 0));
@@ -281,10 +279,6 @@ int main() {
 
         dispatcher.addOrder(symbol, testOrders[i]);
     }
-
-    // Uwaga: Dispatcher działa asynchronicznie (wątki).
-    // W profesjonalnym teście musielibyśmy poczekać, aż kolejki będą puste.
-    // Dla uproszczenia testujemy tutaj szybkość samego Dispatchera i wrzucania do kolejek.
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
