@@ -44,6 +44,7 @@ struct PriceLevelInfo {
 
 class OrderBook {
     public:
+    OrderBook() : asks(MAX_PRICE_LEVELS), bids(MAX_PRICE_LEVELS) {}
     void addOrder(Order newOrder) {
         if (newOrder.Price>=MAX_PRICE_LEVELS) {
             return;
@@ -177,7 +178,7 @@ class OrderBook {
     }
     private:
         std::vector<std::vector<Order>> asks; //from smallest to biggest
-        std::vector<std::vector<Order>, std::greater<unsigned long long int>> bids; //from biggest to smallest
+        std::vector<std::vector<Order>> bids; //from biggest to smallest
         std::unordered_map<unsigned long long int, OrderLocation> idToOrder;
         unsigned long long int bestBid = 0;
         unsigned long long int bestAsk = MAX_PRICE_LEVELS;
@@ -229,8 +230,8 @@ private:
     std::unordered_map<unsigned long long int, std::unique_ptr<OrderBookThread>> shards;
 
 public:
-    void addOrder(Order ord) {
-        ord.symbolId = getInternalId(ord.symbol);
+    void addOrder(std::string_view symbol, Order ord) {
+        ord.symbolId = getInternalId(symbol);
 
         auto it = shards.find(ord.symbolId);
 
@@ -265,7 +266,6 @@ int main() {
     std::vector<Order> testOrders;
     for (int i = 0; i < NUM_ORDERS; ++i) {
         Order o(i, 100 + (i % 10), 10, (i % 2 == 0));
-        o.symbol = (i % 2 == 0) ? "AAPL" : "TSLA";
         testOrders.push_back(o);
     }
 
@@ -274,7 +274,9 @@ int main() {
     auto start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < NUM_ORDERS; ++i) {
-        dispatcher.addOrder(testOrders[i]);
+        std::string_view symbol = (i % 2 == 0) ? "AAPL" : "TSLA";
+
+        dispatcher.addOrder(symbol, testOrders[i]);
     }
 
     // Uwaga: Dispatcher działa asynchronicznie (wątki).
