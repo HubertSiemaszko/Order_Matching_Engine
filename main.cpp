@@ -48,7 +48,7 @@ class OrderBook {
     public:
     OrderBook() : asks(MAX_PRICE_LEVELS), bids(MAX_PRICE_LEVELS) {}
     void addOrder(Order newOrder) {
-        if (newOrder.Price>=MAX_PRICE_LEVELS) {
+        if (newOrder.Price>=MAX_PRICE_LEVELS) [[unlikely]] {
             return;
         }
         if (newOrder.isBuy) {
@@ -81,8 +81,8 @@ class OrderBook {
         if (asks.empty() || bids.empty()) return;
 
         while (bestBid>=bestAsk&&(!asks.empty()||!bids.empty())&& bestAsk < MAX_PRICE_LEVELS && bestBid > 0) {
-            auto askVec = asks[bestAsk];
-            auto bidVec = bids[bestBid];
+            auto& askVec = asks[bestAsk];
+            auto& bidVec = bids[bestBid];
 
             // Znajdź pierwsze aktywne zlecenie po stronie ASK
             size_t askIdx = 0;
@@ -165,7 +165,7 @@ class OrderBook {
 
     void cancelOrder(unsigned long long int id){
         auto findId = idToOrder.find(id);
-        if (findId == idToOrder.end()){
+        if (findId == idToOrder.end()) [[unlikely]]{
             return;
         }
 
