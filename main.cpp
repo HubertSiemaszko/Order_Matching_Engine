@@ -20,9 +20,51 @@ struct Order {
     unsigned long int Quantity;
     bool isBuy;
     bool isActive;
+    unsigned long long int prevIndex = -1;
+    unsigned long long int nextIndex = -1;
     Order() : OrderId(0), Price(0), Quantity(0), isBuy(false) {}
     Order(unsigned long long int id, unsigned long long int p, unsigned long int q, bool buy)
         : OrderId(id), Price(p), Quantity(q), isBuy(buy) {}
+
+};
+
+class OrderPool {
+private:
+    std::vector<Order> pool;
+    uint32_t freeHead;
+
+public:
+    OrderPool(size_t capacity) {
+        pool.resize(capacity);
+        for (size_t i=0; i<capacity; i++) {
+            pool[i].nextIndex=i+1;
+        }
+        pool[capacity-1].nextIndex=0;
+        freeHead=0;
+    }
+
+    uint32_t allocate(){
+        if (freeHead==(uint32_t)-1) [[unlikely]]{
+            return -1;
+        }
+        uint32_t index=freeHead;
+        freeHead=pool[index].nextIndex;
+        pool[index].prevIndex=-1;
+        pool[index].nextIndex=-1;
+        pool[index].isActive=true;
+    }
+
+    void free(uint32_t index) {
+        pool[index].isActive=false;
+        pool[index].nextIndex=freeHead;
+        freeHead=index;
+    }
+
+    Order& get(uint32_t index) {
+        return pool[index];
+    }
+
+
 
 };
 
@@ -44,7 +86,20 @@ struct PriceLevelInfo {
     Order* lastOrder;
 };
 
+struct PriceLevel {
+    uint32_t headIndex=-1; // first order in queue(oldest)
+    uint32_t lastIndex=-1; //last order in queue(newest)
+    unsigned long long int totalVolume = 0;
+
+};
+
 class OrderBook {
+private:
+    OrderPool& orderPool;
+    std::vector<PriceLevel> bids;
+    std::vector<PriceLevel> asks;
+
+    std::vector<uint32_t> orderIdToIndex;
     public:
     OrderBook() : asks(MAX_PRICE_LEVELS), bids(MAX_PRICE_LEVELS) {}
     void addOrder(Order newOrder) {
