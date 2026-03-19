@@ -201,21 +201,27 @@ private:
         std::cout<<"ASKS"<<std::endl;
         for (size_t i=bestAsk; i<MAX_PRICE_LEVELS; i++ )
         {
-            if (!asks[i].empty()) {
-                for (auto const& order:asks[i]) {
-                    if (order.isActive) {
-                        std::cout<<order.OrderId<<" "<<order.Price<<" "<<order.Quantity<<std::endl;
-                    }
+            uint32_t currIndex=asks[i].headIndex;
+
+            while (currIndex != (uint32_t)-1) {
+                Order& order=orderPool.get(currIndex);
+                if (order.isActive) {
+                    std::cout << order.OrderId << " " << order.Price << " " << order.Quantity << std::endl;
                 }
+                currIndex=order.nextIndex;
             }
         }
         std::cout<<"BIDS"<<std::endl;
         for (size_t i=bestBid; i>0; i--)
         {
-            for (auto const& order:bids[i]) {
+            uint32_t currIndex=bids[i].headIndex;
+
+            while (currIndex != (uint32_t)-1) {
+                Order& order=orderPool.get(currIndex);
                 if (order.isActive) {
-                    std::cout<<order.OrderId<<" "<<order.Price<<" "<<order.Quantity<<std::endl;
-                };
+                    std::cout << order.OrderId << " " << order.Price << " " << order.Quantity << std::endl;
+                }
+                currIndex=order.nextIndex;
             }
         }
 
