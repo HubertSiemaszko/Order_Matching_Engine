@@ -1,0 +1,16 @@
+.idea/
+cmake-build-*/
+*.iws
+*.out
+*.app
+
+*.o
+*.obj
+*.exe
+*.a
+*.lib
+*.so
+*.dylib
+
+.DS_Store
+Thumbs.db
