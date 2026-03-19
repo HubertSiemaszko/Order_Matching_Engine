@@ -13,6 +13,7 @@
 #include <chrono>
 #include <iomanip>
 const size_t MAX_PRICE_LEVELS = 1000000;
+const size_t MAX_ORDERS=1000000;
 struct Order {
     unsigned long long int symbolId;
     unsigned long long int OrderId;
@@ -49,9 +50,10 @@ public:
         }
         uint32_t index=freeHead;
         freeHead=pool[index].nextIndex;
-        pool[index].prevIndex=-1;
-        pool[index].nextIndex=-1;
+        pool[index].prevIndex=-1; //order closer to beginning, closer to head
+        pool[index].nextIndex=-1; //order further from beginning, further from head
         pool[index].isActive=true;
+        return index;
     }
 
     void free(uint32_t index) {
@@ -101,94 +103,96 @@ private:
 
     std::vector<uint32_t> orderIdToIndex;
     public:
-    OrderBook() : asks(MAX_PRICE_LEVELS), bids(MAX_PRICE_LEVELS) {}
-    void addOrder(Order newOrder) {
-        if (newOrder.Price>=MAX_PRICE_LEVELS) [[unlikely]] {
-            return;
+    OrderBook(OrderPool& pool) : orderPool(pool),  bids(MAX_PRICE_LEVELS), asks(MAX_PRICE_LEVELS) {
+        orderIdToIndex.resize(MAX_ORDERS, -1);
+    }
+    void addOrder(unsigned long long int orderId, unsigned long long int price, unsigned long int quantity, bool isBuy) {
+        uint32_t newIndex=orderPool.allocate();
+
+        Order& order= orderPool.get(newIndex);
+        order.OrderId=orderId;
+        order.Price=price;
+        order.Quantity=quantity;
+        order.isBuy=isBuy;
+
+        orderIdToIndex[orderId]=newIndex;
+
+        PriceLevel& level=isBuy?bids[price]:asks[price];
+        level.totalVolume+=quantity;
+
+        if (level.headIndex==(uint32_t)-1) [[unlikely]]{
+            level.headIndex=newIndex;
+            level.lastIndex=newIndex;
         }
-        if (newOrder.isBuy) {
-            auto& vec = bids[newOrder.Price];
-            vec.push_back(newOrder);
-            idToOrder[newOrder.OrderId] = { newOrder.Price, true, vec.size() - 1 };
-            //std::cout<<"Dodano zlecenie Kupna:"<<newOrder.OrderId<<std::endl;
-            //std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
-            //std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
-            if (newOrder.Price>=bestBid) {
-                bestBid = newOrder.Price;
-            }
+        else {
+            order.prevIndex=level.lastIndex;
+            orderPool.get(level.lastIndex).nextIndex=newIndex;
+            level.lastIndex=newIndex;
         }
 
-        else {
-            auto& vec = asks[newOrder.Price];
-            vec.push_back(newOrder);
-            idToOrder[newOrder.OrderId] = { newOrder.Price, false, vec.size() - 1 };
-            //std::cout<<"Dodano zlecenie Sprzedaży:"<<newOrder.OrderId<<std::endl;
-            //std::cout<<"Wartosc:"<<newOrder.Price<<std::endl;
-            //std::cout<<"Ilosc:"<<newOrder.Quantity<<std::endl;
-            if (newOrder.Price>=bestAsk) {
-                bestAsk = newOrder.Price;
-            }
+        if (isBuy && price > bestBid) {
+            bestBid = price;
+        } else if (!isBuy && price < bestAsk) {
+            bestAsk = price;
         }
+
         matchOrders();
+
     }
 
     void matchOrders() {
-        if (asks.empty() || bids.empty()) return;
-
-        while (bestBid>=bestAsk&&(!asks.empty()||!bids.empty())&& bestAsk < MAX_PRICE_LEVELS && bestBid > 0) {
-            auto& askVec = asks[bestAsk];
-            auto& bidVec = bids[bestBid];
-
-            // Znajdź pierwsze aktywne zlecenie po stronie ASK
-            size_t askIdx = 0;
-            while (askIdx < askVec.size() && (!askVec[askIdx].isActive || askVec[askIdx].Quantity == 0)) {
-                askIdx++;
-            }
-
-            // Znajdź pierwsze aktywne zlecenie po stronie BID
-            size_t bidIdx = 0;
-            while (bidIdx < bidVec.size() && (!bidVec[bidIdx].isActive || bidVec[bidIdx].Quantity == 0)) {
-                bidIdx++;
-            }
-
-            bool levelChanged = false;
-            if (askIdx==askVec.size()) {
-                if (bestAsk==MAX_PRICE_LEVELS) {
-                    break;
-                }
-                levelChanged = true;
-                askVec.clear();
+        while (bestBid >= bestAsk && bestAsk < MAX_PRICE_LEVELS && bestBid > 0) {
+            PriceLevel& askLevel=asks[bestAsk]; //i get price level of best ask and best bid (using price as index)
+            PriceLevel& bidLevel=bids[bestBid];
+            if (askLevel.headIndex == (uint32_t)-1) {
                 bestAsk++;
-            }
-            if (bidIdx==bidVec.size()) {
-                if (bestBid==0) {
-                    break;
-                }
-                levelChanged = true;
-                askVec.clear();
-                bestAsk--;
+                continue;
             }
 
-            if (levelChanged) continue;
+            if (bidLevel.headIndex == (uint32_t)-1) {
+                bestBid--;
+                continue;
+            }
 
-            Order& sellOrder = askVec[askIdx];
-            Order& buyOrder = bidVec[bidIdx];
+            uint32_t askOrderIdx=askLevel.headIndex;
+            uint32_t bidOrderIdx=bidLevel.headIndex;
+
+            Order& sellOrder=orderPool.get(askOrderIdx);
+            Order& buyOrder=orderPool.get(bidOrderIdx);
 
             unsigned long quantityToTrade = std::min(sellOrder.Quantity, buyOrder.Quantity);
 
             sellOrder.Quantity -= quantityToTrade;
             buyOrder.Quantity -= quantityToTrade;
 
-            if (sellOrder.Quantity == 0) {
-                sellOrder.isActive = false;
-                idToOrder.erase(sellOrder.OrderId);
+            askLevel.totalVolume -= quantityToTrade;
+            bidLevel.totalVolume -= quantityToTrade;
+
+            if (sellOrder.Quantity==0) {
+                askLevel.headIndex=sellOrder.nextIndex;
+                if (askLevel.headIndex == (uint32_t)-1) {
+                    orderPool.get(askLevel.headIndex).prevIndex=-1;
+                }
+                else {
+                    askLevel.lastIndex=-1;
+                }
+
+                orderIdToIndex[sellOrder.OrderId]=-1;
+                orderPool.free(askOrderIdx);
+            }
+            if (buyOrder.Quantity==0) {
+                bidLevel.headIndex=buyOrder.nextIndex;
+
+                if (bidLevel.headIndex != (uint32_t)-1) {
+                    orderPool.get(bidLevel.headIndex).prevIndex=-1;
+                }
+                else {
+                    bidLevel.lastIndex=-1;
+                }
+                orderIdToIndex[buyOrder.OrderId]=-1;
+                orderPool.free(bidOrderIdx);
             }
 
-
-            if (buyOrder.Quantity == 0) {
-                buyOrder.isActive = false;
-                idToOrder.erase(buyOrder.OrderId);
-            }
         }
     }
 
@@ -218,26 +222,49 @@ private:
     }
 
 
-    void cancelOrder(unsigned long long int id){
-        auto findId = idToOrder.find(id);
-        if (findId == idToOrder.end()) [[unlikely]]{
+    void cancelOrder(unsigned long long int orderId){
+        if (orderId>=orderIdToIndex.size()) [[unlikely]]{
             return;
         }
 
-        OrderLocation loc = findId->second;
+        uint32_t orderIndex=orderIdToIndex[orderId];
 
-        if (loc.isBuy) {
-            bids[loc.price][loc.index].isActive = false;
-        } else {
-            asks[loc.price][loc.index].isActive = false;
+        if (orderIndex==(uint32_t)-1) {
+            return;
         }
 
-        idToOrder.erase(id);
+        Order& order=orderPool.get(orderIndex);
+        unsigned long long int price=order.Price;
+        bool isBuy=order.isBuy;
+        unsigned long int quantity=order.Quantity;
+
+        PriceLevel& level=isBuy?bids[price]:asks[price];
+        level.totalVolume-=quantity;
+
+        uint32_t prev=order.prevIndex;
+        uint32_t next=order.nextIndex;
+
+        if (prev!=(uint32_t)-1) {
+            orderPool.get(prev).nextIndex=next;
+        }
+        else {
+            level.headIndex=next;
+        }
+
+        if (next!=(uint32_t)-1) {
+            orderPool.get(next).prevIndex=prev;
+        }
+        else {
+            level.lastIndex=prev;
+        }
+
+        orderIdToIndex[orderId] = -1;
+        orderPool.free(orderIndex);   // Zwrócenie slotu do puli
     }
     private:
-        std::vector<std::vector<Order>> asks; //from smallest to biggest
-        std::vector<std::vector<Order>> bids; //from biggest to smallest
-        std::unordered_map<unsigned long long int, OrderLocation> idToOrder;
+        //std::vector<std::vector<Order>> asks; //from smallest to biggest
+        //std::vector<std::vector<Order>> bids; //from biggest to smallest
+        //std::unordered_map<unsigned long long int, OrderLocation> idToOrder;
         unsigned long long int bestBid = 0;
         unsigned long long int bestAsk = MAX_PRICE_LEVELS;
 };
