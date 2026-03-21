@@ -13,8 +13,10 @@
 #include <chrono>
 #include <iomanip>
 #include <xmmintrin.h>
+#include <windows.h>
 const size_t MAX_PRICE_LEVELS = 1000000;
 const size_t MAX_ORDERS=1000000;
+const size_t MAX_ORDER_ID = 60000000;
 struct Order {
     unsigned long long int symbolId;
     unsigned long long int OrderId;
@@ -160,11 +162,14 @@ private:
     std::vector<uint32_t> orderIdToIndex;
     public:
     OrderBook(OrderPool& pool) : orderPool(pool),  bids(MAX_PRICE_LEVELS), asks(MAX_PRICE_LEVELS) {
-        orderIdToIndex.resize(MAX_ORDERS, -1);
+        orderIdToIndex.resize(MAX_ORDER_ID, -1);
     }
     void addOrder(unsigned long long int orderId, unsigned long long int price, unsigned long int quantity, bool isBuy) {
         uint32_t newIndex=orderPool.allocate();
 
+        if (newIndex == (uint32_t)-1) [[unlikely]] {
+            return;
+        }
         Order& order= orderPool.get(newIndex);
         order.OrderId=orderId;
         order.Price=price;
@@ -399,27 +404,49 @@ public:
 };
 
 int main() {
-    const int NUM_ORDERS = 1000000;
+    // 1. USTAWIENIA SYSTEMOWE (Magia Windowsa)
+    // Ustawiamy najwyższy priorytet procesu - system rzuci wszystko inne w tło
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+
+    // Przypinamy wątek główny (Dispatchera) na sztywno do pierwszego rdzenia (Core 0)
+    SetThreadAffinityMask(GetCurrentThread(), 1ULL << 0);
+
+    const int NUM_ORDERS = 50000000; // 50 MILIONÓW - dystans maratoński
+    const int WARMUP_ORDERS = 5000000; // 5 milionów na rozgrzanie krzemu
+
     ExchangeDispatcher dispatcher;
 
-    // INITIALIZON FAZE (before market opens)
+    // ZIMNA ŚCIEŻKA (Inicjalizacja)
     unsigned int aaplId = dispatcher.registerSymbol("AAPL");
     unsigned int tslaId = dispatcher.registerSymbol("TSLA");
 
+    // Generowanie zleceń do testu (W RAM-ie)
+    // Generowanie zleceń do testu (W RAM-ie)
     std::vector<Order> testOrders;
     testOrders.reserve(NUM_ORDERS);
     for (int i = 0; i < NUM_ORDERS; ++i) {
         unsigned int symId = (i % 2 == 0) ? aaplId : tslaId;
-        Order o(i, 100 + (i % 10), 10, (i % 2 == 0));
-        o.symbolId = symId; // Zlecenie z góry wie, gdzie ma trafić
+
+        // ZMIANA TUTAJ: Uniezależniamy isBuy od symbolu.
+        // 2 zlecenia kupna, 2 zlecenia sprzedaży... dzięki temu Book będzie się ładnie czyścił!
+        bool isBuy = (i % 4 < 2);
+
+        Order o(i, 100 + (i % 10), 10, isBuy);
+        o.symbolId = symId;
         testOrders.push_back(o);
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::cout << "1. Rozgrzewanie procesora (Warm-up: " << WARMUP_ORDERS << " zlecen)..." << std::endl;
+    for (int i = 0; i < WARMUP_ORDERS; ++i) {
+        dispatcher.addOrder(testOrders[i].symbolId, testOrders[i]);
+    }
 
-    std::cout << "Rozpoczynam benchmark dla " << NUM_ORDERS << " zlecen..." << std::endl;
+    // Dajemy ułamek sekundy workerom na przetrawienie rozgrzewki
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // TRADING FAZE (during open market)
+    std::cout << "2. Start wlasciwego benchmarku (" << NUM_ORDERS << " zlecen)..." << std::endl;
+
+    // GORĄCA ŚCIEŻKA - Właściwy pomiar
     auto start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < NUM_ORDERS; ++i) {
@@ -435,6 +462,7 @@ int main() {
     std::cout << "Czas calkowity: " << std::fixed << std::setprecision(4) << diff.count() << " s" << std::endl;
     std::cout << "Przepustowosc: " << std::fixed << std::setprecision(0) << ops << " zlecen/sekunda" << std::endl;
 
+    // Krótki sen, żeby worker thready zdążyły opróżnić SPSC przed ubiciem programu
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     return 0;
