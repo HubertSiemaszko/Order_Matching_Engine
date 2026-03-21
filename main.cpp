@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <iomanip>
+#include <xmmintrin.h>
 const size_t MAX_PRICE_LEVELS = 1000000;
 const size_t MAX_ORDERS=1000000;
 struct Order {
@@ -29,6 +30,61 @@ struct Order {
 
 };
 
+
+template <typename T, size_t Capacity>
+class SPSCQueue {
+    static_assert((Capacity & (Capacity-1))==0, "Capacity not a power od 2");
+    static constexpr size_t Mask=Capacity-1;
+
+    alignas(64) std::atomic<size_t> writeIdx{0};
+    alignas(64) size_t cachedReadIdx{0}; //used for producent(write) for checking last cached place of consumer (read)
+
+    alignas(64) std::atomic<size_t> readIdx{0};
+    alignas(64) size_t cachedWriteIdx{0}; //used for consumer(read) for checking last cached place of producer (write)
+
+    alignas(64) std::vector<T> buffer;
+
+public:
+    SPSCQueue() : buffer(Capacity) {}
+
+    bool push(const T& item) {
+        size_t currentWrite=writeIdx.load(std::memory_order_relaxed); //using load and memory order to optimize assigning and not get any unnecessery memory
+        size_t nextWrite=currentWrite+1;
+
+        if (nextWrite-cachedReadIdx>Capacity) { //checking if write wont override read place
+            cachedReadIdx=readIdx.load(std::memory_order_acquire); // checking with real read place, not cached one
+            if (nextWrite-cachedReadIdx>Capacity) {
+                return false;
+            }
+        }
+        buffer[currentWrite & Mask] = item;
+        writeIdx.store(nextWrite, std::memory_order_release); //assigning nextwrite to writeidx, using realease for info to finish all before this line
+        return true;
+
+    }
+
+    bool pop(T& item) {
+        size_t currentRead=readIdx.load(std::memory_order_relaxed);
+
+        if (currentRead==cachedWriteIdx) {
+            cachedWriteIdx=writeIdx.load(std::memory_order_acquire);
+            if (currentRead==cachedWriteIdx) {
+                return false;
+            }
+        }
+            item=buffer[currentRead & Mask];
+
+            readIdx.store(currentRead+1, std::memory_order_release);
+            return true;
+
+    }
+};
+
+
+
+
+
+
 class OrderPool {
 private:
     std::vector<Order> pool;
@@ -40,7 +96,7 @@ public:
         for (size_t i=0; i<capacity; i++) {
             pool[i].nextIndex=i+1;
         }
-        pool[capacity-1].nextIndex=0;
+        pool[capacity-1].nextIndex=-1;
         freeHead=0;
     }
 
@@ -170,7 +226,7 @@ private:
 
             if (sellOrder.Quantity==0) {
                 askLevel.headIndex=sellOrder.nextIndex;
-                if (askLevel.headIndex == (uint32_t)-1) {
+                if (askLevel.headIndex != (uint32_t)-1) {
                     orderPool.get(askLevel.headIndex).prevIndex=-1;
                 }
                 else {
@@ -279,72 +335,66 @@ private:
 
 class OrderBookThread {
 private:
+    OrderPool pool;
     OrderBook book;
-    std::queue<Order> incomingOrders;
-    std::mutex mtx;
-    std::condition_variable cv;
+
+    SPSCQueue<Order, 1048576> incomingOrders;
+
     std::atomic<bool> running{true};
     std::thread workerThread;
 
     void processLoop() {
-        while (running) {
-            std::unique_lock<std::mutex> lock(mtx);
-            cv.wait(lock, [this] { return !incomingOrders.empty()||!running; });
-            if (!running&&incomingOrders.empty()) break;
-
-            Order order=incomingOrders.front();
-            incomingOrders.pop();
-            lock.unlock();
-            book.addOrder(order);
+        Order order;
+        while (running.load(std::memory_order_relaxed)) {
+            if (incomingOrders.pop(order)) {
+                book.addOrder(order.OrderId, order.Price, order.Quantity, order.isBuy);
+            }
+            else {
+                _mm_pause();
+            }
         }
     }
 public:
-    OrderBookThread() {
+    OrderBookThread():pool(MAX_ORDERS), book(pool) {
         workerThread = std::thread(&OrderBookThread::processLoop, this);
     }
 
     ~OrderBookThread() {
-        running = false;
-        cv.notify_one();
+        running.store(false, std::memory_order_release);
         if (workerThread.joinable()) workerThread.join();
     }
 
     void submitOrder(Order ord) {
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            incomingOrders.push(ord);
+        while (!incomingOrders.push(ord)) {
+            _mm_pause();
         }
-        cv.notify_one();
     }
 };
 
 class ExchangeDispatcher {
 private:
-    std::unordered_map<unsigned long long int, std::unique_ptr<OrderBookThread>> shards;
+    std::vector<std::unique_ptr<OrderBookThread>> shards;
+    std::unordered_map<std::string, unsigned int> symbolRegistry;
 
 public:
-    void addOrder(std::string_view symbol, Order ord) {
-        ord.symbolId = getInternalId(symbol);
+    unsigned int registerSymbol(const std::string& symbol) {
+        auto it=symbolRegistry.find(symbol);
+        if (it==symbolRegistry.end()) {
+            unsigned int newId=symbolRegistry.size();
+            symbolRegistry[symbol]=newId;
 
-        auto it = shards.find(ord.symbolId);
+            if (newId>=shards.size()) {
+                shards.resize(newId+1);
+            }
 
-        if (it == shards.end()) {
-            shards[ord.symbolId] = std::make_unique<OrderBookThread>();
-            it = shards.find(ord.symbolId);
-        }
-
-        it->second->submitOrder(std::move(ord));
-    }
-    unsigned int getInternalId(std::string_view symbol) {
-        static std::unordered_map<std::string, unsigned int> registry;
-        static unsigned int nextId = 0;
-
-        auto it = registry.find(std::string(symbol));
-        if (it == registry.end()) {
-            registry[std::string(symbol)] = ++nextId;
-            return nextId;
+            shards[newId]=std::make_unique<OrderBookThread>();
+            return newId;
         }
         return it->second;
+    }
+
+    inline void addOrder(unsigned int symbolId, const Order& ord) {
+        shards[symbolId]->submitOrder(ord);
     }
 };
 
@@ -352,20 +402,28 @@ int main() {
     const int NUM_ORDERS = 1000000;
     ExchangeDispatcher dispatcher;
 
+    // INITIALIZON FAZE (before market opens)
+    unsigned int aaplId = dispatcher.registerSymbol("AAPL");
+    unsigned int tslaId = dispatcher.registerSymbol("TSLA");
+
     std::vector<Order> testOrders;
+    testOrders.reserve(NUM_ORDERS);
     for (int i = 0; i < NUM_ORDERS; ++i) {
+        unsigned int symId = (i % 2 == 0) ? aaplId : tslaId;
         Order o(i, 100 + (i % 10), 10, (i % 2 == 0));
+        o.symbolId = symId; // Zlecenie z góry wie, gdzie ma trafić
         testOrders.push_back(o);
     }
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
     std::cout << "Rozpoczynam benchmark dla " << NUM_ORDERS << " zlecen..." << std::endl;
 
+    // TRADING FAZE (during open market)
     auto start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < NUM_ORDERS; ++i) {
-        std::string_view symbol = (i % 2 == 0) ? "AAPL" : "TSLA";
-
-        dispatcher.addOrder(symbol, testOrders[i]);
+        dispatcher.addOrder(testOrders[i].symbolId, testOrders[i]);
     }
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -376,6 +434,8 @@ int main() {
     std::cout << "--- WYNIKI BENCHMARKU ---" << std::endl;
     std::cout << "Czas calkowity: " << std::fixed << std::setprecision(4) << diff.count() << " s" << std::endl;
     std::cout << "Przepustowosc: " << std::fixed << std::setprecision(0) << ops << " zlecen/sekunda" << std::endl;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     return 0;
 }
