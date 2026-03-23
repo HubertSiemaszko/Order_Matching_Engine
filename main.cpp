@@ -14,10 +14,27 @@
 #include <iomanip>
 #include <xmmintrin.h>
 #include <windows.h>
+#include <winsock.h>
+#pragma comment(lib, "ws2_32.lib")
 const size_t MAX_PRICE_LEVELS = 1000000;
 const size_t MAX_ORDERS=1000000;
 const size_t MAX_ORDER_ID = 60000000;
+
+
+#pragma pack(push, 1)
+struct NetworkOrderPacket {
+    uint32_t traderId;
+    uint32_t symbolId;
+    uint64_t orderId;
+    uint64_t price;
+    uint32_t quantity;
+    uint8_t  isBuy;
+};
+#pragma pack(pop)
+
+
 struct Order {
+    unsigned int traderId;
     unsigned long long int symbolId;
     unsigned long long int OrderId;
     unsigned long long int Price;
@@ -404,31 +421,26 @@ public:
 };
 
 int main() {
-    // 1. USTAWIENIA SYSTEMOWE (Magia Windowsa)
-    // Ustawiamy najwyższy priorytet procesu - system rzuci wszystko inne w tło
+
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
-    // Przypinamy wątek główny (Dispatchera) na sztywno do pierwszego rdzenia (Core 0)
     SetThreadAffinityMask(GetCurrentThread(), 1ULL << 0);
 
-    const int NUM_ORDERS = 50000000; // 50 MILIONÓW - dystans maratoński
-    const int WARMUP_ORDERS = 5000000; // 5 milionów na rozgrzanie krzemu
+    const int NUM_ORDERS = 50000000;
+    const int WARMUP_ORDERS = 5000000;
 
     ExchangeDispatcher dispatcher;
 
-    // ZIMNA ŚCIEŻKA (Inicjalizacja)
     unsigned int aaplId = dispatcher.registerSymbol("AAPL");
     unsigned int tslaId = dispatcher.registerSymbol("TSLA");
 
-    // Generowanie zleceń do testu (W RAM-ie)
-    // Generowanie zleceń do testu (W RAM-ie)
+
     std::vector<Order> testOrders;
     testOrders.reserve(NUM_ORDERS);
     for (int i = 0; i < NUM_ORDERS; ++i) {
         unsigned int symId = (i % 2 == 0) ? aaplId : tslaId;
 
-        // ZMIANA TUTAJ: Uniezależniamy isBuy od symbolu.
-        // 2 zlecenia kupna, 2 zlecenia sprzedaży... dzięki temu Book będzie się ładnie czyścił!
+
         bool isBuy = (i % 4 < 2);
 
         Order o(i, 100 + (i % 10), 10, isBuy);
@@ -441,12 +453,10 @@ int main() {
         dispatcher.addOrder(testOrders[i].symbolId, testOrders[i]);
     }
 
-    // Dajemy ułamek sekundy workerom na przetrawienie rozgrzewki
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
     std::cout << "2. Start wlasciwego benchmarku (" << NUM_ORDERS << " zlecen)..." << std::endl;
 
-    // GORĄCA ŚCIEŻKA - Właściwy pomiar
     auto start = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < NUM_ORDERS; ++i) {
@@ -462,7 +472,6 @@ int main() {
     std::cout << "Czas calkowity: " << std::fixed << std::setprecision(4) << diff.count() << " s" << std::endl;
     std::cout << "Przepustowosc: " << std::fixed << std::setprecision(0) << ops << " zlecen/sekunda" << std::endl;
 
-    // Krótki sen, żeby worker thready zdążyły opróżnić SPSC przed ubiciem programu
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     return 0;
