@@ -23,10 +23,9 @@ const size_t MAX_ORDER_ID = 60000000;
 
 #pragma pack(push, 1)
 struct NetworkOrderPacket {
-    uint32_t traderId;
-    uint32_t symbolId;
     uint64_t orderId;
     uint64_t price;
+    uint32_t symbolId;
     uint32_t quantity;
     uint8_t  isBuy;
 };
@@ -34,7 +33,6 @@ struct NetworkOrderPacket {
 
 
 struct Order {
-    unsigned int traderId;
     unsigned long long int symbolId;
     unsigned long long int OrderId;
     unsigned long long int Price;
@@ -235,10 +233,15 @@ private:
             uint32_t askOrderIdx=askLevel.headIndex;
             uint32_t bidOrderIdx=bidLevel.headIndex;
 
+
+
             Order& sellOrder=orderPool.get(askOrderIdx);
             Order& buyOrder=orderPool.get(bidOrderIdx);
 
             unsigned long quantityToTrade = std::min(sellOrder.Quantity, buyOrder.Quantity);
+
+            std::cout << "\n$$$ [MATCH] TRANSAKCJA ZAWARTA! Cena: " << bestAsk
+                      << " | Ilosc akcji: " << quantityToTrade << " $$$" << std::endl;
 
             sellOrder.Quantity -= quantityToTrade;
             buyOrder.Quantity -= quantityToTrade;
@@ -421,58 +424,65 @@ public:
 };
 
 int main() {
-
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-
-    SetThreadAffinityMask(GetCurrentThread(), 1ULL << 0);
-
-    const int NUM_ORDERS = 50000000;
-    const int WARMUP_ORDERS = 5000000;
-
+    // 1. ZIMNA ŚCIEŻKA - Inicjalizacja silnika (bez ryzyka)
     ExchangeDispatcher dispatcher;
-
     unsigned int aaplId = dispatcher.registerSymbol("AAPL");
     unsigned int tslaId = dispatcher.registerSymbol("TSLA");
 
-
-    std::vector<Order> testOrders;
-    testOrders.reserve(NUM_ORDERS);
-    for (int i = 0; i < NUM_ORDERS; ++i) {
-        unsigned int symId = (i % 2 == 0) ? aaplId : tslaId;
-
-
-        bool isBuy = (i % 4 < 2);
-
-        Order o(i, 100 + (i % 10), 10, isBuy);
-        o.symbolId = symId;
-        testOrders.push_back(o);
+    // 2. INICJALIZACJA SIECI (Windows Sockets)
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "Blad inicjalizacji Winsock!" << std::endl;
+        return 1;
     }
 
-    std::cout << "1. Rozgrzewanie procesora (Warm-up: " << WARMUP_ORDERS << " zlecen)..." << std::endl;
-    for (int i = 0; i < WARMUP_ORDERS; ++i) {
-        dispatcher.addOrder(testOrders[i].symbolId, testOrders[i]);
+    SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+    sockaddr_in serverAddr{};
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_port = htons(12345); // Nasłuchujemy na porcie 12345
+    serverAddr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(udpSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        std::cerr << "Blad bindowania portu!" << std::endl;
+        return 1;
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    std::cout << "--- HFT MATCHING ENGINE GATEWAY ---" << std::endl;
+    std::cout << "Nasluchiwanie na binarne pakiety (Port UDP: 12345)..." << std::endl;
 
-    std::cout << "2. Start wlasciwego benchmarku (" << NUM_ORDERS << " zlecen)..." << std::endl;
+    // 3. GORĄCA ŚCIEŻKA SIECIOWA (Zero Copy Parsing)
+    char buffer[1024]; // Pamięć podręczna na przychodzące pakiety
 
-    auto start = std::chrono::high_resolution_clock::now();
+    while (true) {
+        int bytes = recvfrom(udpSocket, buffer, sizeof(buffer), 0, nullptr, nullptr);
 
-    for (int i = 0; i < NUM_ORDERS; ++i) {
-        dispatcher.addOrder(testOrders[i].symbolId, testOrders[i]);
+        if (bytes > 0) {
+            //std::cout << "[DEBUG] Karta sieciowa zlapala pakiet! Rozmiar: " << bytes << " bajtow." << std::endl;
+
+            if (bytes == sizeof(NetworkOrderPacket)) [[likely]] {
+                auto* pkt = reinterpret_cast<NetworkOrderPacket*>(buffer);
+                Order ord(pkt->orderId, pkt->price, pkt->quantity, pkt->isBuy != 0);
+                ord.symbolId = pkt->symbolId;
+                dispatcher.addOrder(pkt->symbolId, ord);
+
+                //std::cout << "[SIEC] Zlecenie OK! | Symbol: " << pkt->symbolId
+                  //        << " | Cena: " << pkt->price << " | Ilosc: " << pkt->quantity << std::endl;
+
+                if (pkt->quantity == 0) {
+                    std::cout << "[SYSTEM] Zatruta Pigulka. Wylaczanie..." << std::endl;
+                    break;
+                }
+            } else {
+                std::cout << "[BLAD] Zly rozmiar! Oczekiwano " << sizeof(NetworkOrderPacket)
+                          << " bajtow, a Python wyslal " << bytes << " bajtow." << std::endl;
+            }
+        } else if (bytes < 0) {
+            std::cout << "[BLAD SIECI] Kod bledu Winsock: " << WSAGetLastError() << std::endl;
+        }
     }
 
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> diff = end - start;
-
-    double ops = NUM_ORDERS / diff.count();
-
-    std::cout << "--- WYNIKI BENCHMARKU ---" << std::endl;
-    std::cout << "Czas calkowity: " << std::fixed << std::setprecision(4) << diff.count() << " s" << std::endl;
-    std::cout << "Przepustowosc: " << std::fixed << std::setprecision(0) << ops << " zlecen/sekunda" << std::endl;
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
+    closesocket(udpSocket);
+    WSACleanup();
     return 0;
 }
