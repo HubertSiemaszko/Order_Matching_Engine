@@ -8,47 +8,51 @@ UDP_IP = "127.0.0.1"
 UDP_PORT = 12345
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-print("--- URUCHAMIAM SYMULATOR GIEŁDY ---")
+print("--- URUCHAMIAM SYMULATOR GIEŁDY Z ANULOWANIEM ---")
 
-# Startujemy od ceny 150$ (używamy liczb całkowitych jak w HFT)
 current_market_price = 150
 order_id = 1
-num_orders_to_send = 10000 # Strzelamy 10 tysiącami zleceń!
+num_orders_to_send = 10000
 
-print(f"Generowanie {num_orders_to_send} zlecen w toku...")
+active_orders = []
+
+print(f"Generowanie {num_orders_to_send} akcji w toku...")
 
 for i in range(num_orders_to_send):
-    # 1. Spacer losowy ceny rynku (Cena lekko drży w górę lub w dół)
     current_market_price += random.choice([-1, 0, 1])
+    current_market_price = max(1, current_market_price)
 
-    # 2. Losujemy: 1 = KUPNO, 0 = SPRZEDAŻ
-    is_buy = random.choice([0, 1])
+    if random.random() < 0.10 and len(active_orders) > 0:
+        cancel_id = random.choice(active_orders)
+        active_orders.remove(cancel_id)
 
-    # 3. Mechanika Spreadu i Transakcji
-    # Jeśli kupujemy, zazwyczaj chcemy kupić taniej (poniżej current_market_price)
-    # Czasami (w 20% przypadków) dajemy cenę AGRESYWNĄ (przepłacamy), żeby wywołać MATCH!
-    if is_buy:
-        if random.random() < 0.2:
-            order_price = current_market_price + random.randint(0, 2) # Agresywny kupiec
-        else:
-            order_price = current_market_price - random.randint(1, 5) # Czeka na okazję
+        payload = struct.pack(packet_format, cancel_id, 0, 0, 0, 0)
+        sock.sendto(payload, (UDP_IP, UDP_PORT))
+
     else:
-        if random.random() < 0.2:
-            order_price = current_market_price - random.randint(0, 2) # Agresywny sprzedawca (panika)
+        is_buy = random.choice([0, 1])
+
+        if is_buy:
+            if random.random() < 0.2:
+                order_price = current_market_price + random.randint(0, 2)
+            else:
+                order_price = current_market_price - random.randint(1, 5)
         else:
-            order_price = current_market_price + random.randint(1, 5) # Czeka na zysk
+            if random.random() < 0.2:
+                order_price = current_market_price - random.randint(0, 2)
+            else:
+                order_price = current_market_price + random.randint(1, 5)
 
-    # Ilość od 10 do 100 akcji
-    quantity = random.randint(1, 10) * 10
+        order_price = max(1, order_price)
+        quantity = random.randint(1, 10) * 10
 
-    # Pakujemy i wysyłamy UDP prosto do pamięci RAM Twojego C++
-    payload = struct.pack(packet_format, order_id, order_price, 0, quantity, is_buy)
-    sock.sendto(payload, (UDP_IP, UDP_PORT))
+        active_orders.append(order_id)
 
-    order_id += 1
+        payload = struct.pack(packet_format, order_id, order_price, 0, quantity, is_buy)
+        sock.sendto(payload, (UDP_IP, UDP_PORT))
 
-    # Minimalne opóźnienie (0.001s), żebyś mógł nacieszyć oczy logami z MATCH-y.
-    # W prawdziwym benchmarku usunąłbyś tego sleepa całkowicie!
+        order_id += 1
+
     time.sleep(0.001)
 
 print("--- SYMULACJA ZAKOŃCZONA ---")

@@ -31,7 +31,44 @@ struct NetworkOrderPacket {
 };
 #pragma pack(pop)
 
+#pragma pack(push, 1)
+struct ITCHTradeMessage {
+    char messageType = 'P';
+    uint64_t timestamp;
+    uint32_t symbolId;
+    uint64_t price;
+    uint32_t quantity;
+};
 
+struct ITCHAddOrderMessage {
+    uint64_t timestamp;
+    uint32_t symbolId;
+    uint64_t orderId;
+    char isBuy;
+    uint64_t price;
+    uint32_t quantity;
+};
+
+struct ITCHDeleteOrderMessage {
+    uint64_t timestamp;
+    uint32_t symbolId;
+    uint64_t orderId;
+    char isBuy;
+    uint64_t price;
+    uint32_t quantity;
+};
+
+
+struct ITCHMessage {
+    char messageType; // 'P' (Trade) or 'A' (Add Order)
+    union {
+        ITCHTradeMessage trade;
+        ITCHAddOrderMessage add;
+        ITCHDeleteOrderMessage deleteOrder;
+    };
+    ITCHMessage() {}
+};
+#pragma pack(pop)
 struct Order {
     unsigned long long int symbolId;
     unsigned long long int OrderId;
@@ -89,11 +126,84 @@ public:
                 return false;
             }
         }
-            item=buffer[currentRead & Mask];
+        item=buffer[currentRead & Mask];
 
-            readIdx.store(currentRead+1, std::memory_order_release);
-            return true;
+        readIdx.store(currentRead+1, std::memory_order_release);
+        return true;
 
+    }
+};
+
+
+template <typename T, size_t Capacity, size_t MaxConsumers>
+class SPMCQueue {
+    static_assert((Capacity & (Capacity-1))==0, "Capacity not a power od 2");
+    static constexpr size_t Mask=Capacity-1;
+
+    alignas(64) std::atomic<size_t> writeIdx{0};
+    alignas (64) std::atomic<size_t> readIdx[MaxConsumers];
+    alignas (64) std::atomic<bool> activeConsumers[MaxConsumers];
+    alignas(64) std::vector<T> buffer;
+
+public:
+    SPMCQueue() : buffer(Capacity) {
+        for (size_t i=0; i<MaxConsumers; i++){
+            readIdx[i].store(0, std::memory_order_relaxed);
+            activeConsumers[i].store(false, std::memory_order_relaxed);
+        }
+
+    }
+    int registerConsumer() {
+        for (size_t i=0; i<MaxConsumers; i++) {
+            bool expected=false;
+            if (activeConsumers[i].compare_exchange_strong(expected, true)) {
+                readIdx[i].store(writeIdx.load(std::memory_order_relaxed), std::memory_order_release);
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    bool push(const T& item) {
+        size_t currentWrite=writeIdx.load(std::memory_order_relaxed); //producer current index
+        size_t nextWrite=currentWrite+1;
+
+        size_t minRead=nextWrite;
+        for (size_t i=0; i<MaxConsumers; i++) {
+            if (activeConsumers[i].load(std::memory_order_acquire)) {
+                size_t r=readIdx[i].load(std::memory_order_acquire);
+                if (r<minRead) {
+                    minRead=r;
+                }
+            }
+        }
+
+        if (nextWrite-minRead>Capacity) {
+            return false;
+        }
+
+        buffer[currentWrite&Mask]=item;
+        writeIdx.store(nextWrite, std::memory_order_release);
+        return true;
+
+    }
+
+
+
+    bool pop(int consumerId, T& item) {
+        if (consumerId<0||consumerId>=MaxConsumers) {
+            return false;
+        }
+        size_t currentRead=readIdx[consumerId].load(std::memory_order_relaxed);
+        size_t currentWrite=writeIdx.load(std::memory_order_relaxed);
+
+        if (currentRead==currentWrite) {
+            return false;
+        }
+
+        item=buffer[currentRead&Mask];
+        readIdx[consumerId].store(currentRead+1, std::memory_order_release);
+        return true;
     }
 };
 
@@ -168,6 +278,11 @@ struct PriceLevel {
 
 };
 
+SPMCQueue<ITCHMessage, 1048576, 4> marketDataBus;
+
+
+
+
 class OrderBook {
 private:
     OrderPool& orderPool;
@@ -190,6 +305,21 @@ private:
         order.Price=price;
         order.Quantity=quantity;
         order.isBuy=isBuy;
+
+
+        ITCHMessage msgA;
+        msgA.messageType = 'A';
+        auto nowA = std::chrono::system_clock::now().time_since_epoch();
+        msgA.add.timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(nowA).count();
+        msgA.add.symbolId = order.symbolId;
+        msgA.add.orderId = orderId;
+        msgA.add.isBuy = isBuy ? 'B' : 'S';
+        msgA.add.price = price;
+        msgA.add.quantity = quantity;
+
+        while (!marketDataBus.push(msgA)) {
+            _mm_pause();
+        }
 
         orderIdToIndex[orderId]=newIndex;
 
@@ -240,9 +370,18 @@ private:
 
             unsigned long quantityToTrade = std::min(sellOrder.Quantity, buyOrder.Quantity);
 
-            std::cout << "\n$$$ [MATCH] TRANSAKCJA ZAWARTA! Cena: " << bestAsk
-                      << " | Ilosc akcji: " << quantityToTrade << " $$$" << std::endl;
+            ITCHMessage msgP;
+            msgP.messageType = 'P';
+            msgP.trade.symbolId = buyOrder.symbolId;
+            msgP.trade.price = bestAsk;
+            msgP.trade.quantity = quantityToTrade;
 
+            auto nowP = std::chrono::system_clock::now().time_since_epoch();
+            msgP.trade.timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(nowP).count();
+
+            while (!marketDataBus.push(msgP)) {
+                _mm_pause();
+            }
             sellOrder.Quantity -= quantityToTrade;
             buyOrder.Quantity -= quantityToTrade;
 
@@ -325,6 +464,20 @@ private:
         bool isBuy=order.isBuy;
         unsigned long int quantity=order.Quantity;
 
+        ITCHMessage msgD;
+        msgD.messageType = 'D';
+        auto nowD = std::chrono::system_clock::now().time_since_epoch();
+        msgD.add.timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(nowD).count();
+        msgD.add.symbolId = order.symbolId;
+        msgD.add.orderId = orderId;
+        msgD.add.isBuy = isBuy ? 'B' : 'S';
+        msgD.add.price = price;
+        msgD.add.quantity = quantity;
+
+        while (!marketDataBus.push(msgD)) {
+            _mm_pause();
+        }
+
         PriceLevel& level=isBuy?bids[price]:asks[price];
         level.totalVolume-=quantity;
 
@@ -357,7 +510,6 @@ private:
 };
 
 
-
 class OrderBookThread {
 private:
     OrderPool pool;
@@ -372,7 +524,12 @@ private:
         Order order;
         while (running.load(std::memory_order_relaxed)) {
             if (incomingOrders.pop(order)) {
-                book.addOrder(order.OrderId, order.Price, order.Quantity, order.isBuy);
+                // TRIK: Jeśli Python przysłał ilość 0, to znaczy, że chce anulować!
+                if (order.Quantity == 0) {
+                    book.cancelOrder(order.OrderId);
+                } else {
+                    book.addOrder(order.OrderId, order.Price, order.Quantity, order.isBuy);
+                }
             }
             else {
                 _mm_pause();
@@ -395,6 +552,56 @@ public:
         }
     }
 };
+
+class MarketDataPublisher {
+    private:
+    int consumerId;
+    std::atomic<bool> running{true};
+    std::thread workerThread;
+
+    SOCKET outSocket;
+    sockaddr_in destAddr{};
+
+    void publishLoop() {
+        ITCHMessage msg;
+        while (running.load(std::memory_order_relaxed)) {
+            if (marketDataBus.pop(consumerId, msg)) {
+                int bytesToSend=0;
+                if (msg.messageType=='P') bytesToSend=1+sizeof(ITCHTradeMessage);
+                else if (msg.messageType=='A'||msg.messageType=='D') bytesToSend=1+sizeof(ITCHAddOrderMessage);
+
+                if (bytesToSend>0) {
+                    sendto(outSocket, reinterpret_cast<const char*>(&msg), bytesToSend, 0, (sockaddr*)&destAddr, sizeof(destAddr));
+                }
+            }
+            else {
+                _mm_pause();
+            }
+        }
+    }
+public:
+    MarketDataPublisher() {
+        consumerId=marketDataBus.registerConsumer();
+        if (consumerId==-1) {
+            std::cerr << "ERROR: Too much consumers" << std::endl;
+        }
+
+        outSocket=socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        destAddr.sin_family=AF_INET;
+        destAddr.sin_port=htons(12346);
+        destAddr.sin_addr.s_addr=inet_addr("127.0.0.1");
+
+        workerThread=std::thread(&MarketDataPublisher::publishLoop, this);
+        std::cout << "[SYSTEM] Market Data Publisher running on port 12346." << std::endl;
+    }
+
+    ~MarketDataPublisher() {
+        running.store(false, std::memory_order_release);
+        if (workerThread.joinable()) workerThread.join();
+        closesocket(outSocket);
+    }
+};
+
 
 class ExchangeDispatcher {
 private:
@@ -424,17 +631,19 @@ public:
 };
 
 int main() {
-    // 1. ZIMNA ŚCIEŻKA - Inicjalizacja silnika (bez ryzyka)
-    ExchangeDispatcher dispatcher;
-    unsigned int aaplId = dispatcher.registerSymbol("AAPL");
-    unsigned int tslaId = dispatcher.registerSymbol("TSLA");
-
-    // 2. INICJALIZACJA SIECI (Windows Sockets)
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         std::cerr << "Blad inicjalizacji Winsock!" << std::endl;
         return 1;
     }
+    // 1. ZIMNA ŚCIEŻKA - Inicjalizacja silnika (bez ryzyka)
+    ExchangeDispatcher dispatcher;
+    unsigned int aaplId = dispatcher.registerSymbol("AAPL");
+    unsigned int tslaId = dispatcher.registerSymbol("TSLA");
+
+    MarketDataPublisher publisher;
+
+
 
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 
@@ -444,7 +653,7 @@ int main() {
     serverAddr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(udpSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-        std::cerr << "Blad bindowania portu!" << std::endl;
+        std::cerr << "Blad bindowania portu" << std::endl;
         return 1;
     }
 
@@ -469,7 +678,7 @@ int main() {
                 //std::cout << "[SIEC] Zlecenie OK! | Symbol: " << pkt->symbolId
                   //        << " | Cena: " << pkt->price << " | Ilosc: " << pkt->quantity << std::endl;
 
-                if (pkt->quantity == 0) {
+                if (pkt->quantity == 999999) {
                     std::cout << "[SYSTEM] Zatruta Pigulka. Wylaczanie..." << std::endl;
                     break;
                 }
