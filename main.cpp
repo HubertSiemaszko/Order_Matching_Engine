@@ -2,11 +2,8 @@
 #include <deque>
 #include <iostream>
 #include <vector>
-#include <map>
-#include <list>
 #include <functional>
 #include <thread>
-#include <queue>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
@@ -15,6 +12,7 @@
 #include <xmmintrin.h>
 #include <windows.h>
 #include <winsock.h>
+#include <intrin.h>
 #pragma comment(lib, "ws2_32.lib")
 const size_t MAX_PRICE_LEVELS = 1000000;
 const size_t MAX_ORDERS=1000000;
@@ -324,9 +322,12 @@ private:
             _mm_pause();
         }
 
-        auto t1_a = std::chrono::high_resolution_clock::now().time_since_epoch();
-        uint64_t endNs_a = std::chrono::duration_cast<std::chrono::nanoseconds>(t1_a).count();
-        uint64_t latencyA = endNs_a - order.entryTime;
+        uint64_t endCycles = __rdtsc();
+        uint64_t elapsedCycles = endCycles - order.entryTime;
+
+        // Przelicznik: (cykle * 1000) / GHz_Twojego_CPU
+        // Zakładając np. 3.5 GHz (wpisz swoje taktowanie dla precyzji)
+        uint64_t latencyA = (elapsedCycles * 1000) / 2000;
 
         orderIdToIndex[orderId]=newIndex;
 
@@ -395,13 +396,12 @@ private:
             }
 
 
-            auto t1_p = std::chrono::high_resolution_clock::now().time_since_epoch();
-            uint64_t endNs_p = std::chrono::duration_cast<std::chrono::nanoseconds>(t1_p).count();
-            uint64_t aggressorTime = std::max(buyOrder.entryTime, sellOrder.entryTime);
+            uint64_t endCyclesP = __rdtsc();
+            uint64_t aggressorCycles = std::max(buyOrder.entryTime, sellOrder.entryTime);
+            uint64_t elapsedCyclesP = endCyclesP - aggressorCycles;
 
-            // ZAPISUJEMY DO BUFORA ZAMIAST DRUKOWAĆ:
             if (p_count < 100) {
-                p_latencies[p_count++] = endNs_p - aggressorTime;
+                p_latencies[p_count++] = (elapsedCyclesP * 1000) / 2000;
             }
 
             sellOrder.Quantity -= quantityToTrade;
@@ -695,13 +695,12 @@ int main() {
             //std::cout << "[DEBUG] Karta sieciowa zlapala pakiet! Rozmiar: " << bytes << " bajtow." << std::endl;
 
             if (bytes == sizeof(NetworkOrderPacket)) [[likely]] {
-                auto t0 = std::chrono::high_resolution_clock::now().time_since_epoch();
-                uint64_t startNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t0).count();
+                uint64_t startCycles = __rdtsc(); // Startujemy licznik cykli procesora
 
                 auto* pkt = reinterpret_cast<NetworkOrderPacket*>(buffer);
                 Order ord(pkt->orderId, pkt->price, pkt->quantity, pkt->isBuy != 0);
 
-                ord.entryTime = startNs; // Wkładamy stoper do walizki ze zleceniem!
+                ord.entryTime = startCycles; // Zapisujemy cykle zamiast nanosekund
                 ord.symbolId = pkt->symbolId;
                 dispatcher.addOrder(pkt->symbolId, ord);
 
