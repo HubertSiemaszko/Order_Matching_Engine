@@ -78,6 +78,7 @@ struct Order {
     bool isActive;
     unsigned long long int prevIndex = -1;
     unsigned long long int nextIndex = -1;
+    uint64_t entryTime=0;
     Order() : OrderId(0), Price(0), Quantity(0), isBuy(false) {}
     Order(unsigned long long int id, unsigned long long int p, unsigned long int q, bool buy)
         : OrderId(id), Price(p), Quantity(q), isBuy(buy) {}
@@ -294,7 +295,7 @@ private:
     OrderBook(OrderPool& pool) : orderPool(pool),  bids(MAX_PRICE_LEVELS), asks(MAX_PRICE_LEVELS) {
         orderIdToIndex.resize(MAX_ORDER_ID, -1);
     }
-    void addOrder(unsigned long long int orderId, unsigned long long int price, unsigned long int quantity, bool isBuy) {
+    void addOrder(unsigned long long int orderId, unsigned long long int price, unsigned long int quantity, bool isBuy, uint64_t entryTime) {
         uint32_t newIndex=orderPool.allocate();
 
         if (newIndex == (uint32_t)-1) [[unlikely]] {
@@ -305,6 +306,8 @@ private:
         order.Price=price;
         order.Quantity=quantity;
         order.isBuy=isBuy;
+
+        order.entryTime = entryTime;
 
 
         ITCHMessage msgA;
@@ -320,6 +323,10 @@ private:
         while (!marketDataBus.push(msgA)) {
             _mm_pause();
         }
+
+        auto t1_a = std::chrono::high_resolution_clock::now().time_since_epoch();
+        uint64_t endNs_a = std::chrono::duration_cast<std::chrono::nanoseconds>(t1_a).count();
+        uint64_t latencyA = endNs_a - order.entryTime;
 
         orderIdToIndex[orderId]=newIndex;
 
@@ -344,9 +351,13 @@ private:
 
         matchOrders();
 
+        std::cout << "[LATENCY] Zlecenie 'A' przetworzone w: " << latencyA << " ns\n";
+
     }
 
     void matchOrders() {
+        uint64_t p_latencies[100];
+        int p_count = 0;
         while (bestBid >= bestAsk && bestAsk < MAX_PRICE_LEVELS && bestBid > 0) {
             PriceLevel& askLevel=asks[bestAsk]; //i get price level of best ask and best bid (using price as index)
             PriceLevel& bidLevel=bids[bestBid];
@@ -382,6 +393,17 @@ private:
             while (!marketDataBus.push(msgP)) {
                 _mm_pause();
             }
+
+
+            auto t1_p = std::chrono::high_resolution_clock::now().time_since_epoch();
+            uint64_t endNs_p = std::chrono::duration_cast<std::chrono::nanoseconds>(t1_p).count();
+            uint64_t aggressorTime = std::max(buyOrder.entryTime, sellOrder.entryTime);
+
+            // ZAPISUJEMY DO BUFORA ZAMIAST DRUKOWAĆ:
+            if (p_count < 100) {
+                p_latencies[p_count++] = endNs_p - aggressorTime;
+            }
+
             sellOrder.Quantity -= quantityToTrade;
             buyOrder.Quantity -= quantityToTrade;
 
@@ -413,6 +435,9 @@ private:
                 orderPool.free(bidOrderIdx);
             }
 
+        }
+        for (int i = 0; i < p_count; i++) {
+            std::cout << "[LATENCY] Transakcja 'P' przetworzona w: " << p_latencies[i] << " ns\n";
         }
     }
 
@@ -528,7 +553,7 @@ private:
                 if (order.Quantity == 0) {
                     book.cancelOrder(order.OrderId);
                 } else {
-                    book.addOrder(order.OrderId, order.Price, order.Quantity, order.isBuy);
+                    book.addOrder(order.OrderId, order.Price, order.Quantity, order.isBuy, order.entryTime);
                 }
             }
             else {
@@ -670,8 +695,13 @@ int main() {
             //std::cout << "[DEBUG] Karta sieciowa zlapala pakiet! Rozmiar: " << bytes << " bajtow." << std::endl;
 
             if (bytes == sizeof(NetworkOrderPacket)) [[likely]] {
+                auto t0 = std::chrono::high_resolution_clock::now().time_since_epoch();
+                uint64_t startNs = std::chrono::duration_cast<std::chrono::nanoseconds>(t0).count();
+
                 auto* pkt = reinterpret_cast<NetworkOrderPacket*>(buffer);
                 Order ord(pkt->orderId, pkt->price, pkt->quantity, pkt->isBuy != 0);
+
+                ord.entryTime = startNs; // Wkładamy stoper do walizki ze zleceniem!
                 ord.symbolId = pkt->symbolId;
                 dispatcher.addOrder(pkt->symbolId, ord);
 
